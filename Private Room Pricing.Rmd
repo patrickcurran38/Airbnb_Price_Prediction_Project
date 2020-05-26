@@ -1,0 +1,317 @@
+---
+title: "Final Project (Private Room)"
+author: "Patrick M Curran"
+date: "2/23/2020"
+output: html_document
+---
+
+# Load Packages
+```{r Load Packages}
+knitr::opts_chunk$set(echo = TRUE)
+
+packages_to_be_loaded=c("tidyverse", "ggmap", "jsonlite", "rgdal", "GISTools", "sf", "sp", "tmap", "tmaptools", 
+                        "maptools", "spatstat", "tigris", "gstat", "deldir", "raster", "leaps", "GWmodel",
+                        "dismo")
+
+lapply(packages_to_be_loaded,function(x){
+  if(x%in%installed.packages()[,1]==F){ install.packages(x)}
+  require(x,character.only = T)
+})
+```
+
+
+# Load Data
+```{r Load Data}
+#Airbnb Property Listings
+listings <- read.csv("/Users/Patrick/Documents/Rockhurst University/03 Spring 2020/Term A/BIA 6313 - Spatial & GIS Analytics/Week 7/Final Project/listings.csv")
+
+#Neighborhood Shapefile downloaded from http://data.edinburghcouncilmaps.info/datasets/4082b44746eb4da8b5935be2d3a00185_27
+neighborhoods <- readOGR("/Users/Patrick/Documents/Rockhurst University/03 Spring 2020/Term A/BIA 6313 - Spatial & GIS Analytics/Week 7/Final Project/neighborhoods")
+```
+
+
+# Filter Data for "Private room"
+```{r Filter Data}
+room_listings <- listings %>%
+  filter(room_type == "Private room") %>%
+  distinct(longitude, latitude, .keep_all = TRUE)
+```
+
+## Filter Only Informative/Predictive Columns
+```{r Select Columns}
+room_listings_clean <- room_listings[ , c("id", "name", "host_id", "host_name", "host_listings_count",
+                                         "neighbourhood_cleansed", "country_code", "latitude", "longitude",
+                                         "property_type", "room_type", "accommodates", "bathrooms", "bedrooms",
+                                         "beds", "price", "extra_people", "minimum_nights", "maximum_nights",
+                                         "number_of_reviews", "review_scores_rating", "review_scores_accuracy",
+                                         "review_scores_cleanliness", "review_scores_checkin",
+                                         "review_scores_communication", "review_scores_location",
+                                         "review_scores_value", "reviews_per_month")]
+```
+
+## Eliminate Rows with Missing Values
+```{r Eliminate Rows}
+room_listings_clean <- na.omit(room_listings_clean)
+```
+
+
+# Convert to SF Objects
+```{r Convert to SF Objects}
+room_listings_sf <- st_as_sf(room_listings_clean, coords = c("longitude", "latitude"), crs = 4326)
+
+neighborhoods_sf <- st_as_sf(neighborhoods)
+```
+
+
+# Convert to the Same CRS
+```{r}
+#EPSG:2397 is specific to Scotland
+room_listings_sf <- st_transform(room_listings_sf, 2397)
+neighborhoods_sf <- st_transform(neighborhoods_sf, 2397)
+
+#Check to make sure they are in the same projection
+st_crs(room_listings_sf)
+st_crs(neighborhoods_sf)
+```
+
+
+# Convert to SP Objects
+```{r Convert to SP Objects}
+room_listings_sp <- as(room_listings_sf, "Spatial")
+
+neighborhoods_sp <- as(neighborhoods_sf, "Spatial")
+```
+
+
+# Fix Invalid Geometry
+```{r Fix Invalid Geometry}
+st_is_valid(neighborhoods_sf, reason=TRUE)
+
+neighborhoods_sf <- lwgeom::st_make_valid(neighborhoods_sf)
+```
+
+
+# Map "Private room" Listings
+```{r Map "Private room" Listings}
+tmap_mode("view")
+
+tm_shape(neighborhoods_sf) +
+  tm_borders("black", lwd = 1.5) +
+tm_shape(room_listings_sf) +
+  tm_dots(col="blue", size = 0.01, shape = 21, alpha = 0.6) +
+  tm_layout(title = "Private Room Listings")
+
+tmap_mode("plot")
+```
+
+
+# Create Proximity Polygons
+```{r Create Proximity Polygons}
+# This code was provide by Dr. Pham from Brunsdon (1st Edition).
+room_listings_voro <- voronoi(room_listings_sp)
+```
+
+## Map the Proximity Polygons
+```{r Map the Proximity Polygons}
+tmap_mode('view')
+
+tm_shape(room_listings_voro) + 
+  tm_fill(col='price', style='fixed', palette = "YlOrRd", breaks = seq(0, 1000, 200), alpha=0.6,
+          title="Estimated Price per Night") +
+  tm_layout(title = "Private Room Listings")
+
+tmap_mode("plot")
+```
+
+
+# Inverse Distance Weighted Spatial Analysis
+## Map the IDW Spatial Analysis with Alpha = 1.0
+```{r Define a Sample Grid with Alpha Equal to 1.0}
+s.grid <- spsample(neighborhoods_sp, type = 'regular', n = 10000)
+idw.est <- gstat::idw(price ~ 1, room_listings_sp, newdata = s.grid, idp = 1.0)
+```
+
+```{r IDW Map with Alpha Equal to 1.0}
+levels <- seq(0, 1000, 200)
+tmap_mode('view')
+
+tm_shape(idw.est) + tm_dots(col = 'var1.pred', border.col = NA, alpha = 0.7)
+idw.grid <- SpatialPixelsDataFrame(idw.est, data.frame(idw.est)) 
+tm_shape(idw.grid) + tm_raster(col = 'var1.pred', palette = "YlOrRd", alpha = 0.6, 
+                               title = "Estimated Price per Night") +
+  tm_layout(title = "Private Room Listings")
+
+tmap_mode("plot")
+```
+
+## Map the IDW Spatial Analysis with Alpha = 2.0
+```{r Define a Sample Grid with Alpha Equal to 2.0}
+s.grid2 <- spsample(neighborhoods_sp, type = 'regular', n = 10000)
+idw.est2 <- gstat::idw(price ~ 1, room_listings_sp, newdata = s.grid, idp = 2.0)
+```
+
+```{r IDW Map with Alpha Eual to 2.0}
+tmap_mode('view')
+
+tm_shape(idw.est2) + tm_dots(col = 'var1.pred', border.col = NA, alpha = 0.7)
+idw.grid2 <- SpatialPixelsDataFrame(idw.est2, data.frame(idw.est2)) 
+tm_shape(idw.grid2) + tm_raster(col = 'var1.pred', palette = "YlOrRd", alpha = 0.6, 
+                               title = "Estimated Price per Night") +
+  tm_layout(title = "Private Room Listings")
+
+tmap_mode("plot")
+```
+
+## Map the IDW Spatial Analysis with Alpha = 3.0
+```{r Define a Sample Grid with Alpha Equal to 3.0}
+s.grid3 <- spsample(neighborhoods_sp, type = 'regular', n = 10000)
+idw.est3 <- gstat::idw(price ~ 1, room_listings_sp, newdata = s.grid, idp = 3.0)
+```
+
+```{r IDW Map with Alpha Equal to 3.0}
+tmap_mode('view')
+
+tm_shape(idw.est3) + tm_dots(col = 'var1.pred', border.col = NA, alpha = 0.7)
+idw.grid3 <- SpatialPixelsDataFrame(idw.est2, data.frame(idw.est3)) 
+tm_shape(idw.grid3) + tm_raster(col = 'var1.pred', palette = "YlOrRd", alpha = 0.6, 
+                               title = "Estimated Price per Night") +
+  tm_layout(title = "Private Room Listings")
+
+tmap_mode("plot")
+```
+
+
+# Trend Surface Analysis
+```{r Setup for Analysis}
+room_listings_sp@bbox <- neighborhoods_sp@bbox
+
+tm_shape(neighborhoods_sp) + tm_polygons() +
+  tm_shape(room_listings_sp) +
+  tm_dots(col="price", breaks = levels, palette = "Set1", auto.palette.mapping = FALSE,
+          title="Estimated Price per Night", size=0.1) +
+  tm_layout(title = "Private Room Listings") +
+  tm_legend(legend.outside=TRUE)
+
+# Create an empty grid where n is the total number of cells
+grd              <- as.data.frame(spsample(room_listings_sp, "regular", n=50000))
+names(grd)       <- c("X", "Y")
+coordinates(grd) <- c("X", "Y")
+gridded(grd)     <- TRUE  # Create SpatialPixel object
+fullgrid(grd)    <- TRUE  # Create SpatialGrid object
+
+# Add projection information to the empty grid
+proj4string(grd) <- proj4string(room_listings_sp)
+```
+
+## Define the 1st Order Polynomial Equation
+```{r 1st Order Polynomial Equation}
+f.1 <- as.formula(price ~ X + Y) 
+
+# Add X and Y to room_listings_sp
+room_listings_sp$X <- coordinates(room_listings_sp)[,1]
+room_listings_sp$Y <- coordinates(room_listings_sp)[,2]
+
+# Run the regression model
+lm.1 <- lm( f.1, data = room_listings_sp)
+
+# Use the regression model output to interpolate the surface
+dat.1st <- SpatialGridDataFrame(grd, data.frame(var1.pred = predict(lm.1, newdata = grd))) 
+
+# Clip the interpolated raster to Texas
+r   <- raster(dat.1st)
+r.m <- mask(r, neighborhoods_sp)
+
+# Plot the map
+tmap_mode("view")
+tm_shape(r.m) + 
+  tm_raster(n = 10, palette = "YlOrRd", alpha = 0.6, title = "Estimated Price per Night") +
+  tm_shape(room_listings_sp) + tm_dots(size=0.01) +
+  tm_layout(title = "Private Room Listings") +
+  tm_legend(legend.outside=TRUE)
+tmap_mode("plot")
+```
+
+## Define the 2nd Order Polynomial Equation
+```{r 2nd Order Polynomial Equation}
+# Define the 2nd order polynomial equation
+f.2 <- as.formula(price ~ X + Y + I(X*X) + I(Y*Y) + I(X*Y))
+
+# Add X and Y to room_listing_sp
+room_listings_sp$X <- coordinates(room_listings_sp)[,1]
+room_listings_sp$Y <- coordinates(room_listings_sp)[,2]
+
+# Run the regression model
+lm.2 <- lm( f.2, data = room_listings_sp)
+
+# Use the regression model output to interpolate the surface
+dat.2nd <- SpatialGridDataFrame(grd, data.frame(var1.pred = predict(lm.2, newdata = grd))) 
+
+# Clip the interpolated raster to Texas
+r   <- raster(dat.2nd)
+r.m <- mask(r, neighborhoods_sp)
+
+# Plot the map
+tmap_mode("view")
+tm_shape(r.m) + 
+  tm_raster(n = 10, palette = "YlOrRd", alpha = 0.6, title = "Estimated Price per Night") +
+  tm_shape(room_listings_sp) + tm_dots(size=0.01) +
+  tm_layout(title = "Private Room Listings") +
+  tm_legend(legend.outside=TRUE)
+tmap_mode("plot")
+```
+
+
+# Ordinary Kriging
+```{r Kriging Model}
+evgm <- variogram(price ~ 1, room_listings_sp, boundaries = seq(0, 20000, l = 100))
+fvgm <- fit.variogram(evgm, fit.ranges = FALSE, fit.sills = FALSE, 
+                      vgm(psill = 10000, model = "Exp", range = 6000, nugget = 0))
+plot(evgm)
+```
+
+Normally, a variogram will show an increase in semivariance as distance increases.  In this particular case that is not what occures.  As distance increases, semivariance does increase until about a distance of 10 km, then semivariance decreases dramatically.  Due to this anomaly, a kriging model could not be developed to fit the data.
+
+# Geographically Weighted Multiple Linear Regression Models
+
+## Model One (Fixed Distance)
+```{r Fixed Distance Model}
+gwr_distance <- gwr.basic(price ~ accommodates + beds,
+                     data = room_listings_sp, bw = 500, kernel = 'gaussian')
+
+gwr_distance
+```
+
+## Model Two (Variable Distance)
+```{r Variable Distance Model}
+gwr_variable <- gwr.basic(price ~ accommodates + beds,
+                     data = room_listings_sp, adaptive = TRUE, bw = 70)
+
+gwr_variable
+```
+
+### Multiple Linear Regression Models
+When developing the multiple linear regression models, backwards design was used to select the predictors.  The initial model consisted of all predictors, then eliminated one at a time based on their statistical significance.  Once the model had only statitistically significant predictors, other predictors were eliminated if their coefficiencts were near zero to simplify the model.  The final model contained two predictors: accommodates and beds.
+
+#### Global Multiple Linear Regression Model
+price = 19.349 + (12.346)accommodates + (6.433)beds
+
+Adjusted R-squared: 0.05278 
+
+With a global mean price of around £52, I feel this model does a relatively good job of price predictions.  The model shows that for each person increase in the number of people the private room accommodates there is a £12.35 increase in price.  For each additional bed in the rooom, the price increases by £6.43.  I feel each of these coefficients make sense in the context of the problem.  However, it must be mentioned here that the Adjusted R-squared value for this model is only 0.05278, so this regression model only explains about 5.3% of the overall variance in price.  This is partially due to the fact that location is not taken into account here. In addition, ammenities and the luxury of a property can have a large impact on the price, which cannot be explained by this model.
+
+#### Geographically Weighted Multiple Linear Regression Model (Fixed Distance)
+price = (-83.3572 to 622.970) + (-77.2258 to 59.178)accommodates + (-305.6776 to 57.824)beds
+
+Adjusted R-square value:  0.2263252 (22.6%)
+
+#### Geographically Weighted Multiple Linear Regression Model (Variable Distance)
+price = (-78.5645 to 538.992) + (-79.2509 to 69.805)accommodates + (-170.1824 to 75.227)beds
+
+Adjusted R-square value:  0.1841847 (18.4%)
+
+#### Model Comparisons
+Although the geographically weighted multiple linear regression models are harder to interpret because of their range of coefficient values, they do perform better than the global linear regression model.  In the first geographically weighted multiple linear regression model (fixed distance), a bandwidth of 500 meters was used.  Edinburgh, Scotland is 264 square kilometers, so a bandwidth needed to be used that was small enough to capture the nuance of each neighborhoods.  Additionally, a bandwidth that was too large would too closely resemble the global multiple linear regresion model. The fixed distance model also improves the Adjusted R-squared value significantly from 5.3% to 22.6%.
+
+The second geographically weighted multiple linear regression model (variable distance) improves the Adjusted R-squared from 5.3% to 18.4% compared to the global multiple linear regression model.  In this model, the distance bandwidth is variable depending on the number of observations surrounding a given private room.  A bandwidth of 70 was used, meaning the price was predicted using the 70 closest observations.  This model helps with the geographic variability of the listings.  A majority of the listings are concentrated at the city center and are more dispersed as you move out from the city center.  By using a variable distance model, this affect can be taken into account and guarantees each prediction is using the same number of neighbors for estimation.
+
+When it comes to choosing a preferred model, there are a number of different considerations to be taken into account, such as the distinctness of neighborhoods within a given area, the overall size of a given area, and the purpose of the model.  If interpretability is the most important factor, the global multiple linear regression model would be the best choice; and if the observed area was relatively small, this would be a perfectly acceptable model.  If the neighborhoods are distinct, but the data points are dispersed evenly throughout the observed area, then a geographically weighted linear regression model would be a good choice.  Unlike the analysis on Entire home/apt listings, the listings on the outskirts of the city center appear to be more closely clustered.  Due to this fact, a fixed distance model would be more advantageous to this project over a variable distance model.  However, to improve overall pricing estimations, information should be mined on the text data found in the "summary", "space", "description", "neighborhood_overview", and "transit" fields.  My hypothesis would be that a large portion of the price of a listing would be around the information about ammenities and luxeries found in these fields.
